@@ -3,4 +3,5 @@ groq
 python-docx
 PyPDF2
 httpx
+httpx[socks]
 aiohttp_socks
