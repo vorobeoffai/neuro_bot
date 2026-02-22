@@ -19,7 +19,7 @@ API_TOKEN = '7993411757:AAE-uvrhVkoie5wbDpznnFAXVjIAfoDspYI'
 GROQ_KEY = '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'
 BOT_USERNAME = "neuro_ai_super_bot" # ⚠️ ЗАМЕНИ НА ЮЗЕРНЕЙМ СВОЕГО БОТА (без @)
 
-# 🛡 ПРОКСИ (Взято из настроек Edius)
+# 🛡 ТВОИ ДАННЫЕ ПРОКСИ (Вписал то, что ты скинул)
 PROXY_URL = "socks5://rP4AjF:Q9TK72@45.145.57.210:11121"
 
 # 👑 ТВОЙ ID АДМИНА
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # --- 🔌 ИНИЦИАЛИЗАЦИЯ (СМЕШАННАЯ ТЕХНОЛОГИЯ) ---
 try:
     # 1. Настройка прокси для Groq (через httpx)
+    # Используем таймаут побольше, так как прокси может быть медленным
     proxy_client = httpx.Client(proxy=PROXY_URL, timeout=60.0)
     groq_client = Groq(api_key=GROQ_KEY, http_client=proxy_client)
     
@@ -269,6 +270,7 @@ async def handle_audio(message: types.Message):
     
     try:
         with open(file_path, "rb") as f:
+            # Аудио тоже пойдет через прокси, так как groq_client настроен глобально
             transcription = groq_client.audio.transcriptions.create(
                 file=(file_path, f.read()),
                 model=MODEL_AUDIO,
