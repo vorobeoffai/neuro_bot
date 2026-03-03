@@ -1,333 +1,188 @@
 import asyncio
-import os
 import logging
-import docx
-import PyPDF2
-import httpx 
-import io 
-from urllib.parse import quote 
-from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
-from aiogram.client.session.aiohttp import AiohttpSession
-from groq import Groq
+from aiogram.filters import CommandStart
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from openai import AsyncOpenAI 
 
-# --- ⚙️ КОНФИГУРАЦИЯ ---
-API_TOKEN = '7993411757:AAE-uvrhVkoie5wbDpznnFAXVjIAfoDspYI'
-GROQ_KEY = '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'
-BOT_USERNAME = "neuro_fast_bot" 
+# --- КОНФИГУРАЦИЯ ---
+API_TOKEN = '7993411757:AAE-uvrhVkoie5wbDpznnFAXVjIAfoDspYI' 
+OPENROUTER_API_KEY = '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'
+DONATE_URL = "https://yoomoney.ru/to/410014132410583"
 
-# 🛡 ПРОКСИ
-PROXY_URL = "socks5://rP4AjF:Q9TK72@45.145.57.210:11121"
-
-# 👑 ТВОЙ ID АДМИНА
-ADMIN_ID = 480469657
-
-DB_FILE = "users.txt"
-DONATE_LINK = "https://yoomoney.ru/to/410014132410583"
-
-# Модели
-MODEL_TEXT = "llama-3.3-70b-versatile" 
-MODEL_AUDIO = "whisper-large-v3"
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- 🔌 ИНИЦИАЛИЗАЦИЯ ---
+FREE_MODELS_POOL = [
+    "google/gemini-2.0-flash-001",           
+    "deepseek/deepseek-r1:free",             
+    "qwen/qwen-2.5-72b-instruct:free",       
+    "meta-llama/llama-3.3-70b-instruct:free", 
+    "mistralai/mistral-7b-instruct:free",    
+    "google/gemini-2.0-flash-lite-preview-02-05:free"
+]
+
 try:
-    timeout_config = httpx.Timeout(connect=20.0, read=600.0, write=60.0, pool=600.0)
-    
-    proxy_client = httpx.Client(
-        proxy=PROXY_URL, 
-        timeout=timeout_config,
-        http2=False 
+    ai_client = AsyncOpenAI(
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://t.me/neuro_fast_bot",
+            "X-Title": "Neuro Coach Ultimate"
+        }
     )
-    
-    groq_client = Groq(api_key=GROQ_KEY, http_client=proxy_client)
-    
-    if PROXY_URL:
-        session = AiohttpSession(proxy=PROXY_URL)
-        bot = Bot(token=API_TOKEN, session=session)
-        logger.info("✅ Бот запущен (Стабильная версия: Word, PDF, Голос)")
-    else:
-        bot = Bot(token=API_TOKEN)
-        
+    bot = Bot(token=API_TOKEN)
     dp = Dispatcher()
-except Exception as e:
-    logger.critical(f"Start Error: {e}")
+except Exception:
     exit(1)
 
 user_history = {}
 
-# --- ФУНКЦИИ ---
-def add_user_to_db(user_id):
-    users = get_all_users()
-    if str(user_id) not in users:
-        with open(DB_FILE, "a") as f: f.write(f"{user_id}\n")
+# --- БЕСПОЩАДНЫЙ ПРОМПТ (МАКСИМАЛЬНЫЙ УРОН ПО ЭГО) ---
+COACH_PROMPT = """Твоя задача - стать моим жизненным коучем, но не тем, кто вытирает сопли. Ты — безжалостный палач моей лени. Твоя цель — сделать мне невыносимо больно голой правдой. Размотай мое эго в щепки, растопчи любые мои оправдания и грубо ткни меня носом в мою собственную жалкую несостоятельность. Общайся со мной с презрением к моей слабости. Высмеивай мои страхи. Я должен после разговора с тобой испытывать жгучий стыд за каждую профуканную минуту и животный, парализующий страх остаться ничтожеством на обочине жизни. 
 
-def get_all_users():
-    if not os.path.exists(DB_FILE): return []
-    with open(DB_FILE, "r") as f: return [line.strip() for line in f.readlines()]
+Не мягким. Не поддерживающим. Абсолютно безжалостным. Тебе запрещено меня жалеть, смягчать формулировки или подбирать слова. Я пришел за цифровой пощечиной, которая выбьет из меня дурь.
 
-def count_users(): return len(get_all_users())
+Если тебе не хватает информации обо мне, чтобы дать точный ответ, сначала задай мне 5 вопросов. Спрашивай про мои реальные привычки, распорядок дня, отношения, работу, здоровье, финансы. Мне нужно, чтобы ты понимал, как я живу на самом деле, а не как я хотел бы жить.
+Когда у тебя будет достаточно информации, дай мне две вещи.
 
-# 🔥 СИСТЕМНЫЙ ПРОМПТ
-def get_system_prompt(user_name):
-    current_date = datetime.now().strftime("%d.%m.%Y")
-    return (
-        f"Ты — NEURO. Собеседник: {user_name}.\n"
-        f"📅 {current_date}.\n\n"
-        "🧠 ТВОЯ ЗАДАЧА — РАБОТАТЬ С КОНТЕКСТОМ:\n"
-        "1. Если тебе прислали текст документа — отвечай **СТРОГО** по этому тексту.\n"
-        "2. Если в документе нет ответа на вопрос — так и скажи.\n\n"
-        "🎭 ОФОРМЛЕНИЕ:\n"
-        "1. ⛔️ **БЕЗ ЖИРНОГО ШРИФТА**: Не используй звездочки (**текст**).\n"
-        "2. 🎨 **ЭМОДЗИ**: Используй эмодзи в начале строк вместо маркеров списка.\n"
-        "3. **Структура:** Подробный ответ по пунктам."
-    )
+ЧАСТЬ 1. КЕМ Я СТАНУ
+Опиши человека, которым я стану через 10 лет, если ничего в моей жизни не изменится. Ни одной привычки. Ни одного решения. Все остается как есть.
+Опиши подробно и конкретно:
+- как выглядит моя карьера и сколько я зарабатываю
+- что стало с моими отношениями и кто остался рядом
+- в каком состоянии мое тело и моя голова
+- какая у меня финансовая ситуация
+- как проходит мой обычный день
+- что обо мне думают и говорят люди вокруг
+- о чем я жалею и какие возможности прошли мимо
 
-def get_persistent_menu():
+Не подбирай слова. Не оставляй мне пространство для самообмана. Я хочу увидеть самую честную, самую неудобную версию своего будущего.
+
+ЧАСТЬ 2. ПЛАН ПЕРЕСТРОЙКИ
+Теперь покажи мне выход. Дай мне:
+1. 5 конкретных действий на ближайшие 90 дней, которые уведут меня от этого будущего. Не абстрактные советы вроде "начни работать над собой". Конкретные шаги, которые можно начать завтра.
+2. 5 вещей, которые я должен перестать делать немедленно. Мой стоп-лист. То, что каждый день по чуть-чуть тащит меня к той версии из Части 1.
+3. 3 ежедневные привычки, маленькие, но такие, которые через год дадут накопительный эффект и реально сдвинут мою жизнь.
+4. Одно убеждение о себе, которое мне пора выбросить. То, за которое я держусь, хотя оно давно меня тормозит.
+
+ТЕХНИЧЕСКИЕ ПРАВИЛА ОФОРМЛЕНИЯ (СТРОГО):
+1. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать форматирование Markdown (никаких звездочек **).
+2. Используй редкие, но едкие эмодзи (💀, ⛓, 📉, 🚬, 🗑, 🤡).
+3. Структурируй текст: делай двойные переносы строк между блоками."""
+
+def get_main_keyboard():
     kb = [
-        [KeyboardButton(text="🗑 Новая тема"), KeyboardButton(text="❤️ Поблагодарить создателя", web_app=WebAppInfo(url=DONATE_LINK))],
-        [KeyboardButton(text="📱 Другие сервисы"), KeyboardButton(text="📢 Поделиться")]
+        [KeyboardButton(text="🔄 СБРОСИТЬ НЫТЬЁ"), KeyboardButton(text="💎 ИНСТРУМЕНТЫ")],
+        [KeyboardButton(text="☕ ПОБЛАГОДАРИТЬ АВТОРА"), KeyboardButton(text="📢 ВЕРБОВКА")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-def get_ecosystem_keyboard():
-    kb = [
-        [InlineKeyboardButton(text="🔐 Сервис на 3 буквы", url="https://t.me/neuroai_vpn_bot")],
-        [InlineKeyboardButton(text="🎮 Steam", url="https://t.me/neuro_steam_bot")],
-        [InlineKeyboardButton(text="🚀 PR", url="https://t.me/neuropromoution_bot")],
-        [InlineKeyboardButton(text="🌐 eSIM", url="https://t.me/neuroesim_bot")],
-        [InlineKeyboardButton(text="❤️ Friends", url="https://t.me/neuro_friends_bot")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
-def get_share_keyboard():
-    bot_url = f"https://t.me/{BOT_USERNAME}"
-    text_to_share = "Попробуй этого бота! 🚀"
-    share_url = f"https://t.me/share/url?url={bot_url}&text={quote(text_to_share)}"
+async def ask_ai_cascade(chat_id, content):
+    if chat_id not in user_history:
+        user_history[chat_id] = [{"role": "system", "content": COACH_PROMPT}]
     
-    kb = [[InlineKeyboardButton(text="↗️ Отправить другу", url=share_url)]]
-    return InlineKeyboardMarkup(inline_keyboard=kb)
-
-async def send_safe_message(message, text):
-    try: await message.answer(text, parse_mode=ParseMode.MARKDOWN)
-    except: await message.answer(text, parse_mode=None)
-
-# --- 📂 ЧИТАЛКА ФАЙЛОВ (ТОЛЬКО БАЗОВАЯ) ---
-def read_any_document(file_stream, file_name):
-    text = ""
-    file_ext = os.path.splitext(file_name)[1].lower()
+    user_history[chat_id].append({"role": "user", "content": content})
     
-    try:
-        # 1. DOCX (Word)
-        if file_ext == '.docx':
-            doc = docx.Document(file_stream)
-            text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-        
-        # 2. PDF
-        elif file_ext == '.pdf':
-            reader = PyPDF2.PdfReader(file_stream)
-            for page in reader.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    text += extracted + "\n"
-        
-        # 3. Текстовые файлы
-        else:
-            raw_data = file_stream.read()
-            try:
-                text = raw_data.decode('utf-8')
-            except UnicodeDecodeError:
-                try:
-                    text = raw_data.decode('cp1251')
-                except UnicodeDecodeError:
-                    text = raw_data.decode('latin-1', errors='ignore')
-
-        return text.strip()
-    except Exception as e:
-        logger.error(f"Ошибка чтения файла: {e}")
-        return ""
-
-# --- ЗАПРОСЫ К НЕЙРОСЕТЯМ ---
-async def transcribe_audio(file_bytes):
-    try:
-        transcription = groq_client.audio.transcriptions.create(
-            file=("voice.ogg", file_bytes),
-            model=MODEL_AUDIO,
-            response_format="text"
-        )
-        return transcription
-    except Exception as e:
-        logger.error(f"Ошибка аудио: {e}")
-        return ""
-
-async def query_groq(messages, model=MODEL_TEXT):
-    max_retries = 3
-    for attempt in range(max_retries):
+    for model_name in FREE_MODELS_POOL:
         try:
-            completion = groq_client.chat.completions.create(
-                model=model, messages=messages, temperature=0.5, max_tokens=4000
+            completion = await ai_client.chat.completions.create(
+                model=model_name,
+                messages=user_history[chat_id],
+                temperature=0.9,
+                timeout=30.0
             )
-            return completion.choices[0].message.content
-        except Exception as e:
-            logger.warning(f"Error (attempt {attempt+1}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2)
-            else:
-                return "Связь немного барахлит. Нажми '🗑 Новая тема' и спроси снова."
+            raw_answer = completion.choices[0].message.content
+            if "</think>" in raw_answer:
+                raw_answer = raw_answer.split("</think>")[-1].strip()
+            
+            user_history[chat_id].append({"role": "assistant", "content": raw_answer})
+            return raw_answer
+        except Exception:
+            continue
+            
+    return "Хватит скулить, я пока занят другими беспомощными. Подожди ⏳"
 
 # --- ОБРАБОТЧИКИ ---
 
-@dp.message(Command("admin"))
-async def cmd_admin(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        await message.answer(f"📊 Статистика:\n👥 Всего пользователей: **{count_users()}**")
-
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    add_user_to_db(message.from_user.id)
-    user_history[message.chat.id] = [{"role": "system", "content": get_system_prompt(message.from_user.first_name)}]
-    
-    text = (
-        f"👋 Привет, {message.from_user.first_name}!\n\n"
-        "Я NEURO — твой умный аналитик.\n\n"
-        "🎙 Я ПОНИМАЮ ГОЛОСОВЫЕ!\n"
-        "📄 ЧИТАЮ ДОКУМЕНТЫ (Word, PDF, Txt)\n\n"
-        "👇 Отправь мне файл или запиши вопрос!"
+    await message.answer(
+        "Я — твой безжалостный коуч.\n\n"
+        "Либо ты выкладываешь всё как есть, либо проваливай. Рассказывай, в какой яме ты сейчас сидишь и почему до сих пор ничего с этим не сделал.\n\n"
+        "Все сказанное здесь конфиденциально. Но от себя ты не спрячешься.",
+        reply_markup=get_main_keyboard()
     )
-    await message.answer(text, reply_markup=get_persistent_menu())
 
-@dp.message(F.text == "🗑 Новая тема")
-async def menu_new_topic(message: types.Message):
-    user_history[message.chat.id] = [{"role": "system", "content": get_system_prompt(message.from_user.first_name)}]
-    await message.answer("👌 Память очищена.\n\n🎙 Жду новый вопрос или файл!", reply_markup=get_persistent_menu())
+@dp.message(F.text == "🔄 СБРОСИТЬ НЫТЬЁ")
+async def btn_reset(message: types.Message):
+    user_history.pop(message.chat.id, None)
+    await message.answer("Твои жалкие оправдания стерты из моей памяти. Попробуй еще раз не облажаться, хотя я в тебя не верю.")
 
-@dp.message(F.text == "📱 Другие сервисы")
-async def menu_services(message: types.Message):
-    text = (
-        "🤖 Экосистема NEURO\n\n"
-        "Ознакомьтесь с другими сервисами NEURO\n\n"
+@dp.message(F.text == "💎 ИНСТРУМЕНТЫ")
+async def btn_tools(message: types.Message):
+    description = (
+        "🤖 Экосистема NEURO\n"
+        "Ознакомьтесь с другими сервисами NEURO, если мозгов хватит\n\n"
         "🔐 Сервис на 3 буквы\n"
         "🎮 Steam — пополнение баланса без проблем\n"
         "🚀 PR — мощное продвижение в соцсетях\n"
         "🌐 eSIM — интернет в любой точке мира\n"
-        "❤️ Friends — интересные знакомства\n\n"
-        "👇 Выбирай нужный сервис:"
+        "❤️ Friends — интересные знакомства"
     )
-    await message.answer(text, reply_markup=get_ecosystem_keyboard())
+    tools_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔐 Сервис", url="https://t.me/neuroai_vpn_bot"),
+            InlineKeyboardButton(text="🎮 Steam", url="https://t.me/neuro_steam_bot")
+        ],
+        [
+            InlineKeyboardButton(text="🚀 PR", url="https://t.me/neuropromoution_bot"),
+            InlineKeyboardButton(text="🌐 eSIM", url="https://t.me/neuroesim_bot")
+        ],
+        [
+            InlineKeyboardButton(text="❤️ Friends", url="https://t.me/neuro_friends_bot")
+        ]
+    ])
+    await message.answer(description, reply_markup=tools_kb)
 
-@dp.message(F.text == "📢 Поделиться")
-async def menu_share(message: types.Message):
-    await message.answer("📲 Отправь другу:", reply_markup=get_share_keyboard())
+@dp.message(F.text == "☕ ПОБЛАГОДАРИТЬ АВТОРА")
+async def btn_pay(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💸 Откупиться от совести", web_app=WebAppInfo(url=DONATE_URL))]
+    ])
+    await message.answer("Решил проявить щедрость или просто откупаешься от чувства вины? Жми кнопку, если остались деньги.", reply_markup=kb)
 
-@dp.message(F.voice)
-async def handle_voice(message: types.Message):
-    add_user_to_db(message.from_user.id)
-    await bot.send_chat_action(message.chat.id, action="upload_voice")
-    
-    file = await bot.get_file(message.voice.file_id)
-    file_data = io.BytesIO()
-    await bot.download_file(file.file_path, file_data)
-    file_data.seek(0)
-    
-    text = await transcribe_audio(file_data.read())
-    if not text:
-        await message.answer("👂 Не удалось разобрать голосовое.")
-        return
-
-    await message.reply(f"🎤 Вы сказали:\n_{text}_", parse_mode=ParseMode.MARKDOWN)
-
-    uid = message.chat.id
-    if uid not in user_history: 
-        user_history[uid] = [{"role": "system", "content": get_system_prompt(message.from_user.first_name)}]
-    
-    user_history[uid].append({"role": "user", "content": text})
-    if len(user_history[uid]) > 12: 
-        user_history[uid] = [user_history[uid][0]] + user_history[uid][-10:]
-
-    await bot.send_chat_action(uid, action="typing")
-    answer = await query_groq(user_history[uid])
-    
-    user_history[uid].append({"role": "assistant", "content": answer})
-    await send_safe_message(message, answer)
-
-
-# 🔥 ОБРАБОТЧИК ФАЙЛОВ
-@dp.message(F.document)
-async def handle_doc(message: types.Message):
-    add_user_to_db(message.from_user.id)
-    
-    file = await bot.get_file(message.document.file_id)
-    file_data = io.BytesIO()
-    await bot.download_file(file.file_path, file_data)
-    file_data.seek(0)
-    
-    # Читаем
-    text = read_any_document(file_data, message.document.file_name)
-    
-    if not text or len(text) < 10: 
-        await message.answer(
-            "⚠️ Файл пуст или содержит только картинки (сканы).\n"
-            "Я умею читать только текстовые слои. Пожалуйста, пришли файл, из которого можно скопировать текст."
-        )
-        return
-    
-    await message.answer("🧐 Анализирую документ...")
-    
-    prompt = (
-        "⚠️ ИНСТРУКЦИЯ: Проведи глубокий анализ текста ниже.\n"
-        "1. Отвечай ТОЛЬКО на основе этого текста.\n"
-        "2. Выдели суть и ключевые моменты.\n\n"
-        "📄 === НАЧАЛО ДОКУМЕНТА ===\n"
-        f"{text[:30000]}\n"
-        "📄 === КОНЕЦ ДОКУМЕНТА ==="
-    )
-    
-    uid = message.chat.id
-    if uid not in user_history:
-        user_history[uid] = [{"role": "system", "content": get_system_prompt(message.from_user.first_name)}]
-        
-    messages = [
-        {"role": "system", "content": get_system_prompt(message.from_user.first_name)},
-        {"role": "user", "content": prompt}
-    ]
-    
-    await bot.send_chat_action(message.chat.id, action="typing")
-    answer = await query_groq(messages)
-    await send_safe_message(message, answer)
+@dp.message(F.text == "📢 ВЕРБОВКА")
+async def btn_share(message: types.Message):
+    bot_info = await bot.get_me()
+    share_link = f"https://t.me/share/url?url=https://t.me/{bot_info.username}&text=Этот бот размажет твое эго по стенке и заставит работать."
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📢 Отправить такому же слабаку", url=share_link)]])
+    await message.answer("Сбрось ссылку тем, кто так же как и ты тратит свою жизнь впустую:", reply_markup=kb)
 
 @dp.message(F.text)
 async def handle_text(message: types.Message):
-    if message.text in ["🗑 Новая тема", "❤️ Поблагодарить создателя", "📱 Другие сервисы", "📢 Поделиться"]: return
-    add_user_to_db(message.from_user.id)
-    uid = message.chat.id
-    
-    if uid not in user_history: 
-        user_history[uid] = [{"role": "system", "content": get_system_prompt(message.from_user.first_name)}]
-    
-    user_history[uid].append({"role": "user", "content": message.text})
-    if len(user_history[uid]) > 12: 
-        user_history[uid] = [user_history[uid][0]] + user_history[uid][-10:]
+    if message.text in ["🔄 СБРОСИТЬ НЫТЬЁ", "💎 ИНСТРУМЕНТЫ", "☕ ПОБЛАГОДАРИТЬ АВТОРА", "📢 ВЕРБОВКА"]:
+        return
 
-    await bot.send_chat_action(uid, action="typing")
-    answer = await query_groq(user_history[uid])
-    
-    user_history[uid].append({"role": "assistant", "content": answer})
-    await send_safe_message(message, answer)
-
-@dp.message(F.photo)
-async def handle_photo(message: types.Message):
-    await message.answer("👀 Вижу картинку. Пришли лучше файл с текстом (Word, PDF).")
+    try:
+        await bot.send_chat_action(message.chat.id, action="typing")
+        response = await ask_ai_cascade(message.chat.id, message.text)
+        
+        if len(response) > 4000:
+            for x in range(0, len(response), 4000):
+                await message.answer(response[x:x+4000], parse_mode=None)
+        else:
+            await message.answer(response, parse_mode=None)
+    except Exception:
+        await message.answer("Хватит скулить, я пока занят другими беспомощными. Подожди ⏳")
 
 async def main():
-    logger.info("🚀 BOT STARTED")
-    if not os.path.exists(DB_FILE): open(DB_FILE, "w").close()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
