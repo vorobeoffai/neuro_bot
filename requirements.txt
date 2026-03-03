@@ -1,9 +1,2 @@
 aiogram>=3.0.0
-groq
-python-docx
-PyPDF2
-httpx
-io
-aiohttp
-aiohttp_socks
-python-socks
+openai>=1.0.0
