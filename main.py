@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 
 # --- КОНФИГУРАЦИЯ ---
 API_TOKEN = '7993411757:AAE-uvrhVkoie5wbDpznnFAXVjIAfoDspYI' 
-OPENROUTER_API_KEY = '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'
+OPENROUTER_API_KEY = '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'
 DONATE_URL = "https://yoomoney.ru/to/410014132410583"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
